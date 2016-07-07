@@ -1,0 +1,8 @@
+{
+    "cniVersion" : "0.1.0",
+    "name" : "mynet",
+    "type" : "./plugin.py",
+    "bridge" : "mesos-ovs0",
+    "router" : "mesos-ovs-router",
+    "db" : "tcp:192.168.162.139:6641"
+}
