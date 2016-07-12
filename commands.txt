@@ -1,0 +1,2 @@
+# Start Slaves
+sudo ./mesos-agent --ip=192.168.162.131 --master=192.168.162.139:5050 --work_dir=/var/lib/mesos/agent --isolation=filesystem/linux,docker/runtime --image_providers=docker --network_cni_config_dir=/home/dnimay/mesos-net-modules/net-modules/conf --network_cni_plugins_dir=/home/dnimay/mesos-net-modules/net-modules/plugins --launcher_dir=`pwd` --executor_registration_timeout=10mins
