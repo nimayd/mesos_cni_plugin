@@ -80,13 +80,13 @@ def main():
     print json.dumps(ip_info)
 
 if __name__ == '__main__':
-    IP_ONLY = "192.168.100.3"
+    IP_ONLY = "192.168.200.3"
     IP = "%s/24" % IP_ONLY
-    MAC = "0A:00:00:00:00:01"
+    MAC = "0A:00:00:00:00:03"
     GATEWAY = "192.168.100.1"
     DB = "--db=tcp:192.168.162.139:6641"
     LOCAL_IP = "192.168.162.131"
     ENCAP_TYPE = "geneve"
     SUBNET = "192.168.100.0/24"
-    MAC_LRP = "0A:00:00:00:00:02"
+    MAC_LRP = "0A:00:00:00:00:04"
     main()

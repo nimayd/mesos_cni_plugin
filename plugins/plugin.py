@@ -4,29 +4,27 @@ import os
 import sys
 import subprocess
 from subprocess import call
-import names
 
 def add_port(lp_name, ls_name):
     call(['ovn-nbctl', DB, 'lsp-add', ls_name, lp_name])
-    call(['ovn-nbctl', DB, 'lsp-set-addresses', lp_name, "%s %s" % (MAC, IP_ONLY)])
+    call(['ovn-nbctl', DB, 'lsp-set-addresses', lp_name, "dynamic"]) 
 
-#     cmd = "ovn-nbctl get Logical-Switch-Port %s addresses" % lp_name
-#     child = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-#     stdout, stderr = child.communicate()
-#     if child.returncode:
-#         raise RuntimeError(stderr)
-# 
-#     # TODO: Make this read from the dynamic addresses column when that is implemented.
-#     mac, ip4 = stdout.strip("[]\n").split()
+    cmd = "get Logical-Switch-Port %s dynamic_addresses" % lp_name
+    stdout, stderr = ovn_nbctl(cmd, DB)
 
-    link_linux_ns_to_mesos_ns(lp_name)
-    create_veth_pair(lp_name)
+    # Address is of the form: (MAC, IP)
+    address = stdout.strip('""\n').split()
 
-    call(['ovs-vsctl', '--may-exist', 'add-port', 'br-int', "%s_l" % lp_name])
-    call(['ovs-vsctl', 'set', 'interface', "%s_l" % lp_name, 'external_ids:iface-id=%s' % lp_name])
+    return address
 
-    move_veth_pair_into_ns(lp_name)
-    set_ns_addresses(lp_name)
+#    link_linux_ns_to_mesos_ns(lp_name)
+#    create_veth_pair(lp_name)
+
+#    call(['ovs-vsctl', '--may-exist', 'add-port', 'br-int', "%s_l" % lp_name])
+#    call(['ovs-vsctl', 'set', 'interface', "%s_l" % lp_name, 'external_ids:iface-id=%s' % lp_name])
+
+#    move_veth_pair_into_ns(lp_name)
+#    set_ns_addresses(lp_name)
 
 #     return (mac, ip4)
 
@@ -53,13 +51,13 @@ def set_ns_addresses(ns_name):
 def main():
     config = json.loads(''.join(sys.stdin.readlines()).replace('\n', '').replace('\t', ''))
 
-    add_port('test-ns0', config['bridge'])
-#     mac, ip4 = add_port('test-ns0', config['bridge'])
+#    mac, ip4 = add_port('test-ns0', config['bridge'])
+    mac, ip4 = add_port(os.environ['CNI_CONTAINERID'], config['bridge'])
 
     ip_info = {
         "cniVersion" : "0.1.0",
         "ip4" : {
-            "ip" : IP,
+            "ip" : ip4,
             "gateway" : GATEWAY
         },
         "ip6" : {
@@ -71,13 +69,20 @@ def main():
     }
     print json.dumps(ip_info)
 
+def ovn_nbctl(cmd_str, db):
+    cmd = ("ovn-nbctl %s %s" % (db, cmd_str)).split()
+    child = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout, stderr = child.communicate()
+    if child.returncode:
+#        call(['ovn-nbctl', DB, 'lsp-del', "test-ns0"])
+        call(['ovn-nbctl', DB, 'lsp-del', os.environ['CNI_CONTAINERID']])
+        raise RuntimeError(stderr)
+    return (stdout, stderr)
+
 if __name__ == '__main__':
-    IP_ONLY = "192.168.100.3"
-    IP = "%s/24" % IP_ONLY
-    MAC = "0A:00:00:00:00:01"
+#    IP_ONLY = "192.168.200.3"
+#    IP = "%s/24" % IP_ONLY
+#    MAC = "0A:00:00:00:00:01"
     GATEWAY = "192.168.100.1"
     DB = "--db=tcp:192.168.162.139:6641"
-    LOCAL_IP = "192.168.162.131"
-    SUBNET = "192.168.100.0/24"
-    MAC_LRP = "0A:00:00:00:00:02"
     main()
