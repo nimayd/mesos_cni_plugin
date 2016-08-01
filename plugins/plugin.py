@@ -5,30 +5,28 @@ import subprocess
 import sys
 from subprocess import call
 
-import cni_error
+import ovnutil
 
-def add_port(lp_name, ls_name, gw):
-    call(['ovn-nbctl', DB, 'lsp-add', ls_name, lp_name])
-    call(['ovn-nbctl', DB, 'lsp-set-addresses', lp_name, "dynamic"]) 
+def add_port(lsp_name, ls_name, gw):
+    call(['ovn-nbctl', DB, 'lsp-add', ls_name, lsp_name])
+    call(['ovn-nbctl', DB, 'lsp-set-addresses', lsp_name, "dynamic"]) 
 
-    cmd = "get Logical-Switch-Port %s dynamic_addresses" % lp_name
-    stdout, stderr = ovn_nbctl(cmd, DB)
+    # Address is of the form: (MAC, IP)
+    address = ovnutil.get_lsp_dynamic_address(lsp_name)
     cmd = "get Logical-Switch %s other_config:subnet" % ls_name
     subnet, stderr = ovn_nbctl(cmd, DB)
 
-    # Address is of the form: (MAC, IP)
-    address = stdout.strip('"\n').split()
     subnet_mask_str = subnet.split('/')[1].strip('"\n')
     address[1] = "%s/%s" % (address[1], subnet_mask_str)
 
-    link_linux_ns_to_mesos_ns(lp_name)
-    create_veth_pair(lp_name)
+    link_linux_ns_to_mesos_ns(lsp_name)
+    create_veth_pair(lsp_name)
 
-    call(['ovs-vsctl', '--may-exist', 'add-port', 'br-int', "%s_l" % lp_name])
-    call(['ovs-vsctl', 'set', 'interface', "%s_l" % lp_name, 'external_ids:iface-id=%s' % lp_name])
+    call(['ovs-vsctl', '--may-exist', 'add-port', 'br-int', "%s_l" % lsp_name])
+    call(['ovs-vsctl', 'set', 'interface', "%s_l" % lsp_name, 'external_ids:iface-id=%s' % lsp_name])
 
-    move_veth_pair_into_ns(lp_name)
-    set_ns_addresses(lp_name, address[0], address[1], gw)
+    move_veth_pair_into_ns(lsp_name)
+    set_ns_addresses(lsp_name, address[0], address[1], gw)
 
     return address
 
@@ -52,11 +50,11 @@ def set_ns_addresses(ns_name, mac, ip, gw):
     call(['ip', 'netns', 'exec', ns_name, 'ip', 'link', 'set', 'dev', 'eth0', 'address', mac])
     call(['ip', 'netns', 'exec', ns_name, 'ip', 'route', 'add', 'default', 'via', gw])
 
-def del_port(lp_name):
-    ovn_nbctl("lsp-del %s" % lp_name, DB)
-    ovs_port_name = "%s_l" % lp_name
+def del_port(lsp_name):
+    ovn_nbctl("lsp-del %s" % lsp_name, DB)
+    ovs_port_name = "%s_l" % lsp_name
     ovs_vsctl("del-port %s" % ovs_port_name)
-#    delete_ns(lp_name)
+#    delete_ns(lsp_name)
 
 def delete_ns(ns_name):
     cmd = 'ip netns delete %s' % ns_name
