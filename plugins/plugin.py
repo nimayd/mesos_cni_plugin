@@ -6,6 +6,9 @@ import sys
 from subprocess import call
 
 import ovnutil
+from ovnutil import ovn_nbctl, ovs_vsctl
+
+OVN_REMOTE = ""
 
 def add_port(lsp_name, ls_name, gw):
     call(['ovn-nbctl', DB, 'lsp-add', ls_name, lsp_name])
@@ -28,7 +31,12 @@ def add_port(lsp_name, ls_name, gw):
     move_veth_pair_into_ns(lsp_name)
     set_ns_addresses(lsp_name, address[0], address[1], gw)
 
+    install_lb_rules()
+
     return address
+
+def install_lb_rules():
+    pass
 
 def link_linux_ns_to_mesos_ns(ns_name):
     mesos_ns_path = '/var/run/mesos/isolators/network/cni/%s/ns' % os.environ['CNI_CONTAINERID']
@@ -72,10 +80,13 @@ def main():
                 "ip" : ip4,
                 "gateway" : config['gateway'],
                 "routes" : [
-                    { "dst" : "0.0.0.0/0"}
+                    { "dst" : "0.0.0.0/0" }
                 ]
             },
             "ip6" : {
+                # As of now, OVN address management does not support IPv6
+                # addresses. The address below should be supplied via the
+                # config file and will be a dummy address if it is not.
                 "ip" : "fd71:c650:3e0e::/48"
             },
             "dns" : {
@@ -86,19 +97,7 @@ def main():
 
     elif (os.environ['CNI_COMMAND'] == 'DEL'):
         del_port(os.environ['CNI_CONTAINERID'])
-
-def ovn_nbctl(cmd_str, db=None):
-    cmd = ("ovn-nbctl %s %s" % (db, cmd_str)).split()
-    child = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    stdout, stderr = child.communicate()
-    if child.returncode:
-        err
-        raise RuntimeError(stderr)
-    return (stdout, stderr)
-
-def ovs_vsctl(cmd_str):
-    cmd = ("ovs-vsctl %s" % cmd_str).split()
-    call(cmd)
+        remove_lb_rules()
 
 if __name__ == '__main__':
     DB = "--db=tcp:192.168.162.139:6641"

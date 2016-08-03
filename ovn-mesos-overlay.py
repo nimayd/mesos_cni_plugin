@@ -14,8 +14,6 @@ OVN_REMOTE = ""
 OVN_BRIDGE = "br-int"
 OVN_GATEWAY_LR = "mesos-gw-router"
 OVN_DISTRIBUTED_LR = "mesos-router"
-JOIN_LS_SUBNET = "169.0.0.0/24"
-EXTERNAL_LS_SUBNET = "169.0.1.0/24"
 
 # For the CNI plugin configuration file.
 CONFIG_FNAME = "ovn-mesos-config.json"
@@ -42,9 +40,10 @@ def create_cni_config(args):
     CONFIG['cniVersion'] = CNI_VERSION
     CONFIG['name'] = CNI_NETWORK
     CONFIG['type'] = CNI_TYPE
+    CONFIG['db'] = OVN_REMOTE
     CONFIG['subnet'] = args.subnet
     CONFIG['ipv6'] = args.ipv6 if args.ipv6 else IPV6_DUMMY
-    CONFIG['db'] = OVN_REMOTE
+    CONFIG['port_range'] = args.port_range
     CONFIG['switch'] = ovs_vsctl("get Open_vSwitch . external_ids:system-id")
     with open(CONFIG_FNAME, 'w') as config_file:
         json.dump(CONFIG, config_file)
@@ -69,12 +68,26 @@ def get_rp_ip4(subnet):
     # TODO Implement this.
     return subnet
 
+def parse_port_range(port_range):
+    """
+    Parses a port range string of the form "<int>-<int>". Raises an exception
+    if the string is not in the correct format.
+
+    Returns a tuple of the range values.
+    """
+    # TODO implement this.
+#    result = port_range.split('-')
+#    regex = '[0-9]+-[0-9]+'
+#    return (min(), max())
+
 def node_init(args):
     """
     Creates a logical switch with the given subnet. Attaches switch to
     distributed router. Creates configuration file for Mesos CNI isolator.
     """
     OVN_REMOTE = ovnutil.get_ovn_remote()
+
+    port_range = parse_port_range(args.port_range)
     create_cni_config(args)
     ls = CONFIG['switch']
     subnet = args.subnet
@@ -105,18 +118,6 @@ def node_init(args):
 
     # TODO: Add routes to allow traffic from node.
 
-def parse_port_range(port_range):
-    """
-    Parses a port range string of the form "number-number". Raises an exception
-    if the string is not in the correct format.
-
-    Returns a tuple of the range values.
-    """
-    # TODO implement this.
-#    result = port_range.split('-')
-#    regex = '[0-9]+-[0-9]+'
-#    return (min(), max())
-
 def gateway_init(args):
     """
     Allow containers that are connected to the OVN network to access the
@@ -124,21 +125,14 @@ def gateway_init(args):
     """
     OVN_REMOTE = get_ovn_remote()
 
-    port_range = parse_port_range(args.port_range)
-    CONFIG['port_range'] = args.port_range
-    with open(CONFIG_FNAME, 'w') as config_file:
-        json.dump(CONFIG, config_file)
-
-    ovn_nbctl("ls-add join -- set Logical_Switch join "
-              "other_config:subnet=%s" % JOIN_LS_SUBNET, OVN_REMOTE)
+    ovn_nbctl("ls-add join", OVN_REMOTE)
     ovnutil.connect_ls_to_lr("join", OVN_DISTRIBUTED_LR, "169.0.0.1/24",
                              random_mac(), OVN_REMOTE)
     ovn_nbctl("create Logical_Router name=%s" % OVN_GATEWAY_LR, OVN_REMOTE)
     ovnutil.connect_ls_to_lr("join", OVN_GATEWAY_LR, "169.0.0.2/24",
                              random_mac(), OVN_REMOTE)
-    ovn_nbctl("ls-add external -- set Logical_Switch external "
-              "other_config:subnet=%s" % EXTERNAL_LS_SUBNET, OVN_REMOTE)
-    ovnutil.connect_ls_to_lr("external", OVN_GATEWAY_LR, "169.0.1.1/24",
+    ovn_nbctl("ls-add external", OVN_REMOTE)
+    ovnutil.connect_ls_to_lr("external", OVN_GATEWAY_LR, args.eth1_ip,
                              random_mac(), OVN_REMOTE)
     # TODO: Add load balancing rules using port range. Add info to ovsdb.
 
@@ -158,13 +152,15 @@ def main():
     parser_node_init.add_argument('--subnet', help="Node's IPv4 subnet.",
                                   required=True)
     parser_node_init.add_argument('--ipv6', help="Node's IPv6 address.")
+    parser_node_init.add_argument('--port_range', required=True,
+                                     help="Port range for port mapping.")
     parser_node_init.set_defaults(func=node_init)
 
     # Parser for sub-command init
     parser_gateway_init = subparsers.add_parser('gateway-init',
                                                 help="Initialize gateway")
-    parser_gateway_init.add_argument('--port_range', required=True,
-                                     help="Port range for port mapping.")
+    parser_gateway_init.add_argument("--eth1_ip", help="eth1's ip address.",
+                                     required=True)
     parser_gateway_init.set_defaults(func=gateway_init)
 
 #    Include a flag to pass in DB
