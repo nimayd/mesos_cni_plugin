@@ -5,11 +5,13 @@ def append_subnet_mask(ip, subnet):
     mask = subnet.split("/")[1].strip('"\n')
     return "%s/%s" % (ip, mask)
 
-def call_popen(cmd):
-    child = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+def call_popen(cmd_list):
+    child = subprocess.Popen(cmd_list, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE)
     output = child.communicate()
     if child.returncode:
-        raise RuntimeError("Fatal error executing %s: %s" % (cmd, output[1]))
+        raise RuntimeError("Fatal error executing %s: %s"
+                           % (" ".join(cmd_list), output[1]))
     if len(output) == 0 or output[0] == None:
         output = ""
     else:
@@ -48,13 +50,13 @@ def get_lsp_dynamic_address(lsp, db):
     address[0] = '"%s"' % (address[0])
     return address
 
-def connect_ls_to_lr(ls, lr, rp_ip, rp_mac, db):
+def connect_ls_to_lr(ls, lr, rp, rp_ip, rp_mac, db):
     """
     Connect a logical switch to a logical router by creating a logical switch
     port and a logical router port peer.
     """
     ovn_nbctl("-- --id=@lrp create Logical_Router_port name=%s network=%s "
               "mac=%s -- add Logical_Router %s ports @lrp -- lsp-add %s "
-              "rp-%s" % (ls, rp_ip, rp_mac, lr, ls, ls), db)
+              "rp-%s" % (rp, rp_ip, rp_mac, lr, ls, rp), db)
     ovn_nbctl("set Logical-Switch-Port rp-%s type=router "
-              "options:router-port=%s addresses=%s" % (ls, ls, rp_mac), db)
+              "options:router-port=%s addresses=%s" % (rp, rp, rp_mac), db)

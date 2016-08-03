@@ -7,7 +7,7 @@ import random
 import re
 
 import ovnutil
-from ovnutil import ovn_nbctl, ovs_vsctl
+from ovnutil import ovn_nbctl, ovs_vsctl, call_popen
 
 # OVN network configuration information.
 OVN_REMOTE = ""
@@ -26,7 +26,7 @@ IPV6_DUMMY = "::1/0"
 def plugin_init(args):
     """
     Takes care of everything that isn't handled by gateway-init() and only
-    needs to happend once. As of now, that only includes created the
+    needs to happend once. As of now, that only includes creating the
     distributed router to connect node logical switches.
     """
     OVN_REMOTE = ovnutil.get_ovn_remote()
@@ -70,15 +70,20 @@ def get_rp_ip4(subnet):
 
 def parse_port_range(port_range):
     """
-    Parses a port range string of the form "<int>-<int>". Raises an exception
+    Parses a port range string of the form "%d-%d". Raises an exception
     if the string is not in the correct format.
-
-    Returns a tuple of the range values.
     """
-    # TODO implement this.
-#    result = port_range.split('-')
-#    regex = '[0-9]+-[0-9]+'
-#    return (min(), max())
+    result = port_range.split('-')
+    err_str = "Invalid port range format: %s" % (port_range)
+    if (len(result) != 2):
+        raise Exception(err_str)
+    try:
+        x, y = int(result[0]), int(result[1])
+    except ValueError:
+        print(err_str)
+        raise
+    if x < 0 or y < 0:
+        raise Exception(err_str)
 
 def node_init(args):
     """
@@ -87,17 +92,19 @@ def node_init(args):
     """
     OVN_REMOTE = ovnutil.get_ovn_remote()
 
-    port_range = parse_port_range(args.port_range)
+    port_range = args.port_range
+    parse_port_range(port_range)
+    ovs_vsctl("set Open_vSwitch . external_ids:port_range=%s" % (port_range))
     create_cni_config(args)
     ls = CONFIG['switch']
     subnet = args.subnet
 
-    # Add a logical switch for the agent. Connec the logical switch to a
+    # Add a logical switch for the agent. Connect the logical switch to a
     # distributed router.
     ovn_nbctl("ls-add %s -- set Logical_Switch %s other_config:subnet=%s"
               % (ls, ls, subnet), OVN_REMOTE)
     rp_ip4 = get_rp_ip4(subnet)
-    ovnutil.connect_ls_to_lr(ls, OVN_DISTRIBUTED_LR, rp_ip4,
+    ovnutil.connect_ls_to_lr(ls, OVN_DISTRIBUTED_LR, ls, rp_ip4,
                              random_mac(), OVN_REMOTE)
 
     # Add a logical switch port for the agent.
@@ -112,29 +119,61 @@ def node_init(args):
               "external_ids:iface-id=%s"
               % (OVN_BRIDGE, ovs_lsp, ovs_lsp, mac, lsp))
     command = "ip address add %s dev %s" % (ip4, ovs_lsp)
-    ovnutil.call_popen(command.split())
+    call_popen(command.split())
     command = "ip link set dev %s up" % (ovs_lsp)
-    ovnutil.call_popen(command.split())
+    call_popen(command.split())
 
+    # TODO Remove default route added with lport creation.
     # TODO: Add routes to allow traffic from node.
 
 def gateway_init(args):
     """
     Allow containers that are connected to the OVN network to access the
-    outside world. Add new information (like port range) to configuration file.
+    outside world.
     """
-    OVN_REMOTE = get_ovn_remote()
+    OVN_REMOTE = ovnutil.get_ovn_remote()
 
+    cluster_subnet = args.cluster_subnet
+    eth1_ip = args.eth1_ip
+
+    # Create a logical switch "join" and connect it to the DR.
     ovn_nbctl("ls-add join", OVN_REMOTE)
-    ovnutil.connect_ls_to_lr("join", OVN_DISTRIBUTED_LR, "169.0.0.1/24",
+    ovnutil.connect_ls_to_lr("join", OVN_DISTRIBUTED_LR, "join0", "169.0.0.1/24",
                              random_mac(), OVN_REMOTE)
+
+    # Create a gateway router and connect "join" to it.
     ovn_nbctl("create Logical_Router name=%s" % OVN_GATEWAY_LR, OVN_REMOTE)
-    ovnutil.connect_ls_to_lr("join", OVN_GATEWAY_LR, "169.0.0.2/24",
+    ovnutil.connect_ls_to_lr("join", OVN_GATEWAY_LR, "join1", "169.0.0.2/24",
                              random_mac(), OVN_REMOTE)
+
+    # Install static routes.
+    ovn_nbctl("-- --id=@lrt create Logical_Router_Static_Route "
+              "ip_prefix=%s nexthop=169.0.0.1 -- add Logical_Router "
+              "%s static_routes @lrt" % (cluster_subnet, OVN_GATEWAY_LR),
+              OVN_REMOTE)
+    ovn_nbctl("-- --id=@lrt create Logical_Router_Static_Route "
+              "ip_prefix=0.0.0.0/0 nexthop=%s -- add Logical_Router "
+              "%s static_routes @lrt" % (eth1_ip, OVN_GATEWAY_LR), OVN_REMOTE)
+    ovn_nbctl("-- --id=@lrt create Logical_Router_Static_Route "
+              "ip_prefix=0.0.0.0/0 nexthop=169.0.0.2 -- add Logical_Router "
+              "%s static_routes @lrt" % (OVN_DISTRIBUTED_LR), OVN_REMOTE)
+
+    # Create a logical switch "external" and connect it to GWR using eth1's IP
+    # for the logical router port. Add eth1 as a logical switch port to
+    # "external" and set its address to "unknown".
     ovn_nbctl("ls-add external", OVN_REMOTE)
-    ovnutil.connect_ls_to_lr("external", OVN_GATEWAY_LR, args.eth1_ip,
+    ovnutil.connect_ls_to_lr("external", OVN_GATEWAY_LR, "external", eth1_ip,
                              random_mac(), OVN_REMOTE)
-    # TODO: Add load balancing rules using port range. Add info to ovsdb.
+    ovn_nbctl("lsp-add external eth1 -- lsp-set-addresses eth1 unknown",
+              OVN_REMOTE)
+    command = "ifconfig eth1 0.0.0.0"
+    call_popen(command.split())
+    ovs_vsctl("add-port %s eth1 -- set interface eth1 "
+              "external_ids:iface-id=eth1" % (OVN_BRIDGE))
+
+    # Create a load balancer for "external".
+    ovn_nbctl("-- --id=@lb create Load_Balancer -- set Logical_Switch "
+              "external load_balancer @lb", OVN_REMOTE)
 
 def main():
     parser = argparse.ArgumentParser()
@@ -153,12 +192,14 @@ def main():
                                   required=True)
     parser_node_init.add_argument('--ipv6', help="Node's IPv6 address.")
     parser_node_init.add_argument('--port_range', required=True,
-                                     help="Port range for port mapping.")
+                                  help="Port range for port mapping.")
     parser_node_init.set_defaults(func=node_init)
 
     # Parser for sub-command init
     parser_gateway_init = subparsers.add_parser('gateway-init',
                                                 help="Initialize gateway")
+    parser_gateway_init.add_argument("--cluster_subnet", help="Cluster subnet",
+                                    required=True)
     parser_gateway_init.add_argument("--eth1_ip", help="eth1's ip address.",
                                      required=True)
     parser_gateway_init.set_defaults(func=gateway_init)
