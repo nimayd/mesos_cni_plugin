@@ -79,10 +79,7 @@ def main():
                 ]
             },
             "ip6" : {
-                # As of now, OVN address management does not support IPv6
-                # addresses. The address below should be supplied via the
-                # config file and will be a dummy address if it is not.
-                "ip" : "fd71:c650:3e0e::/48"
+                "ip" : ""
             },
             "dns" : {
                 "nameservers" : ["127.0.1.1"],
