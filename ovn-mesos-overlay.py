@@ -14,7 +14,7 @@ OVN_DISTRIBUTED_LR = "mesos-router"
 OVS_PORT = "ovs-mesos"
 
 # For the CNI plugin configuration file.
-CONFIG_FNAME = "conf/ovn-mesos-config.json"
+CONFIG_FNAME = "ovn-mesos-config.json"
 CONFIG = {}
 CNI_VERSION = "0.1.0"
 CNI_NETWORK = "ovn"
