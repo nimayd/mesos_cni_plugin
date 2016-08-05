@@ -19,7 +19,8 @@ central components.
 
 Start ovn-northd daemon.  This daemon translates networking intent from Mesos
 stored in the OVN_Northbound database to logical flows in OVN_Southbound
-database.
+database.  It is also responsible for managing and dynamically allocating
+IP/MAC addresses for Mesos containers.
 
 ```
 /usr/share/openvswitch/scripts/ovn-ctl start_northd
@@ -55,183 +56,106 @@ on every boot)
 /usr/share/openvswitch/scripts/ovn-ctl start_controller
 ```
 
-* Start the Open vSwitch network driver.
+* Initialize the OVN network using the OVN network driver.
 
-By default Docker uses Linux bridge for networking.  But it has support
-for external drivers.  To use Open vSwitch instead of the Linux bridge,
-you will need to start the Open vSwitch driver.
-
-The Open vSwitch driver uses the Python's flask module to listen to
-Docker's networking api calls.  So, if your host does not have Python's
-flask module, install it with:
+Run the OVN network driver with the "plugin-init" subcommand once on any host.
+Running "ovn-nbctl show" should now display a single logical router called
+"mesos-router."
 
 ```
-easy_install -U pip
-pip install Flask
+PYTHONPATH=$OVS_PYTHON_LIBS_PATH ovn-mesos-overlay-driver plugin-init
 ```
 
-Start the Open vSwitch driver on every host where you plan to create your
-containers.  (Please read a note on $OVS_PYTHON_LIBS_PATH that is used below
-at the end of this document.)
+* Add each of the hosts to the OVN network.
+
+On each host where you will have a Mesos agent/master running, run the
+OVN network driver with the "node-init" subcommand. $SUBNET is the subnet
+(e.g. 172.16.1.0/24) of your host, $CLUSTER_SUBNET is the subnet of your entire
+Mesos cluster (e.g. 172.16.0.0/16), gateway will be the IPv4 address of your
+host's router port (e.g. 172.16.1.1/24), and $PATH_TO_CNI_CONFIG_DIR is the
+absolute path to the directory where you would like the CNI configuration file
+to be created.
 
 ```
-PYTHONPATH=$OVS_PYTHON_LIBS_PATH ovn-docker-overlay-driver --detach
+PYTHONPATH=$OVS_PYTHON_LIBS_PATH ovn-mesos-overlay-driver node-init \
+--subnet=$SUBNET --cluster_subnet=$CLUSTER_SUBNET --gateway=$GATEWAY_IP \
+--config_dir=$PATH_TO_CNI_CONFIG_DIR
 ```
 
-Docker has inbuilt primitives that closely match OVN's logical switches
-and logical port concepts.  Please consult Docker's documentation for
-all the possible commands.  Here are some examples.
+The driver will take the necessary steps to connect a host to mesos-router,
+allowing for basic-east west traffic.  At this point, running an
+"ovn-nbctl show", should now also display a logical switch with the name
+"${OVS_SYSTEM_ID}_agent" and a logical port called "ovn-mesos" for each host
+that the "node-init" subcommand was run on.
 
-* Create your logical switch.
+* Configure a gateway host for South-North traffic.
 
-To create a logical switch with name 'foo', on subnet '192.168.1.0/24' run:
+WARNING: The following command will cause you to lose connectivity through
+eth1 on the host which it is executed on.  Do not execute this command if
+you require connectivity through eth1 for other purposes (e.g. SSH connection
+to your host).
 
-```
-NID=`docker network create -d openvswitch --subnet=192.168.1.0/24 foo`
-```
-
-* List your logical switches.
-
-```
-docker network ls
-```
-
-You can also look at this logical switch in OVN's northbound database by
-running the following command.
-
-```
-ovn-nbctl --db=tcp:$CENTRAL_IP:6640 ls-list
-```
-
-* Docker creates your logical port and attaches it to the logical network
-in a single step.
-
-For e.g., to attach a logical port to network 'foo' inside cotainer busybox,
-run:
+If you want to configure a gateway to allow South-North traffic for your
+containers, run the OVN network driver with the "gateway-init" subcommand on
+the host your gateway host.  You will need to provide the cluster subnet and
+IPv4 address of your eth1 device (with subnet mask) as command line arguments.
+North-South traffic is not currently supported.  See "Note on North-Sourth
+traffic" to learn why.
 
 ```
-docker run -itd --net=foo --name=busybox busybox
+PYTHONPATH=$OVS_PYTHON_LIBS_PATH ovn-mesos-overlay-driver gateway-init \
+--cluster_subnet=$CLUSTER_SUBNET --eth1_ip=$ETH1_IP
 ```
 
-* List all your logical ports.
+* Create a CNI plugin directory on agent nodes.
 
-Docker currently does not have a CLI command to list all your logical ports.
-But you can look at them in the OVN database, by running:
-
-```
-ovn-nbctl --db=tcp:$CENTRAL_IP:6640 lsp-list $NID
-```
-
-* You can also create a logical port and attach it to a running container.
+On each node where you plan to run a Mesos agent, create a directory for the
+CNI plugin and symlink the plugin executable into the new directory.
 
 ```
-docker network create -d openvswitch --subnet=192.168.2.0/24 bar
-docker network connect bar busybox
+mkdir -p $PATH_TO_CNI_PLUGIN_DIR
+ln -s $PATH_TO_OVS_DIR/ovn/utilities/ovn-mesos-plugin $PATH_TO_CNI_PLUGIN_DIR/ovn-mesos-plugin
 ```
 
-You can delete your logical port and detach it from a running container by
-running:
+Running Mesos
+=============
+
+To run Mesos, you will need know the IP addresses of your master and agent
+nodes.  $MASTER_IP and $AGENT_IP are dynamically allocated, so you can find
+them with the following commands, respectively:
 
 ```
-docker network disconnect bar busybox
+ovn-nbctl list Logical-Switch-Port master
+ovn-nbctl list Logical-Switch-Port ${OVS_SYSTEM_ID}_agent
 ```
 
-* You can delete your logical switch by running:
+The following commands require you to be in the Mesos "build" directory, i.e.
+$MESOS_ROOT_DIRECTORY/build.
+
+* Start a Mesos master.
 
 ```
-docker network rm bar
+./src/mesos-master --ip=$MASTER_IP --work_dir=/var/lib/mesos/master
 ```
 
-
-The "underlay" mode
-===================
-
-This mode requires that you have a OpenStack setup pre-installed with OVN
-providing the underlay networking.
-
-* One time setup.
-
-A OpenStack tenant creates a VM with a single network interface (or multiple)
-that belongs to management logical networks.  The tenant needs to fetch the
-port-id associated with the interface via which he plans to send the container
-traffic inside the spawned VM.  This can be obtained by running the
-below command to fetch the 'id'  associated with the VM.
+* Start a Mesos agent.
 
 ```
-nova list
+./src/mesos-agent --ip=$AGENT_IP --master=$MASTER_IP:5050 \
+--work_dir=/var/lib/mesos/agent --isolation=filesystem/linux,docker/runtime \
+--image_providers=docker --network_cni_config_dir=$PATH_TO_CNI_CONFIG_DIR \
+--network_cni_plugins_dir=$PATH_TO_CNI_PLUGIN_DIR --launcher_dir=`pwd` \
+--executor_registration_timeout=5mins
 ```
 
-and then by running:
+Note on North-South traffic
+===========================
 
-```
-neutron port-list --device_id=$id
-```
-
-Inside the VM, download the OpenStack RC file that contains the tenant
-information (henceforth referred to as 'openrc.sh').  Edit the file and add the
-previously obtained port-id information to the file by appending the following
-line: export OS_VIF_ID=$port_id.  After this edit, the file will look something
-like:
-
-```
-#!/bin/bash
-export OS_AUTH_URL=http://10.33.75.122:5000/v2.0
-export OS_TENANT_ID=fab106b215d943c3bad519492278443d
-export OS_TENANT_NAME="demo"
-export OS_USERNAME="demo"
-export OS_VIF_ID=e798c371-85f4-4f2d-ad65-d09dd1d3c1c9
-```
-
-* Create the Open vSwitch bridge.
-
-If your VM has one ethernet interface (e.g.: 'eth0'), you will need to add
-that device as a port to an Open vSwitch bridge 'breth0' and move its IP
-address and route related information to that bridge. (If it has multiple
-network interfaces, you will need to create and attach an Open vSwitch bridge
-for the interface via which you plan to send your container traffic.)
-
-If you use DHCP to obtain an IP address, then you should kill the DHCP client
-that was listening on the physical Ethernet interface (e.g. eth0) and start
-one listening on the Open vSwitch bridge (e.g. breth0).
-
-Depending on your VM, you can make the above step persistent across reboots.
-For e.g.:, if your VM is Debian/Ubuntu, you can read
-[openvswitch-switch.README.Debian].  If your VM is RHEL based, you can read
-[README.RHEL]
-
-
-* Start the Open vSwitch network driver.
-
-The Open vSwitch driver uses the Python's flask module to listen to
-Docker's networking api calls.  The driver also uses OpenStack's
-python-neutronclient libraries.  So, if your host does not have Python's
-flask module or python-neutronclient install them with:
-
-```
-easy_install -U pip
-pip install python-neutronclient
-pip install Flask
-```
-
-Source the openrc file. e.g.:
-````
-. ./openrc.sh
-```
-
-Start the network driver and provide your OpenStack tenant password
-when prompted.  (Please read a note on $OVS_PYTHON_LIBS_PATH that is used below
-at the end of this document.)
-
-```
-PYTHONPATH=$OVS_PYTHON_LIBS_PATH ovn-docker-underlay-driver --bridge breth0 \
---detach
-```
-
-From here-on you can use the same Docker commands as described in the
-section 'The "overlay" mode'.
-
-Please read 'man ovn-architecture' to understand OVN's architecture in
-detail.
+As of now, Mesos does not support port-mapping.  As a result, we cannot direct
+North-South traffic to the correct container.  In the future, one could imagine
+Mesos providing some sort of API to allow access to container-host port
+mappings.  These port mappings could be used to create load balancing rules to
+direct North-South traffic to the appopriate containers.
 
 Note on $OVS_PYTHON_LIBS_PATH
 =============================
