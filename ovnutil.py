@@ -42,8 +42,8 @@ def ovn_nbctl(cmd_str, db=None):
 def ovs_vsctl(cmd_str):
     return call_prog("ovs-vsctl", cmd_str.split()).strip('"\n')
 
-def get_ovn_remote():
-    return ovs_vsctl("get Open_vSwitch . external_ids:ovn-remote")
+def get_ovn_nb():
+    return ovs_vsctl("get Open_vSwitch . external_ids:ovn-nb")
 
 def get_lsp_dynamic_address(lsp, db):
     """

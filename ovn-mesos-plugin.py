@@ -8,18 +8,20 @@ from subprocess import call
 import ovnutil
 from ovnutil import ovn_nbctl, ovs_vsctl, call_popen
 
-OVN_REMOTE = ""
+OVN_NB = ""
 OVN_BRIDGE = "br-int"
 
 def add_port(lsp, ls, gw):
-    OVN_REMOTE = ovnutil.get_ovn_remote()
-    ovn_nbctl("lsp-add %s %s" % (ls, lsp), OVN_REMOTE)
-    ovn_nbctl("lsp-set-addresses %s dynamic" % (lsp), OVN_REMOTE)
+    OVN_NB = ovnutil.get_ovn_nb()
+    ovn_nbctl("lsp-add %s %s" % (ls, lsp), OVN_NB)
+    ovn_nbctl("lsp-set-addresses %s dynamic" % (lsp), OVN_NB)
 
     # Address is of the form: (MAC, IP)
-    address = ovnutil.get_lsp_dynamic_address(lsp, OVN_REMOTE)
-    subnet = ovn_nbctl("get Logical-Switch %s other_config:subnet" % ls,
-                       OVN_REMOTE)
+    address = ovnutil.get_lsp_dynamic_address(lsp, OVN_NB)
+    if not address:
+        raise Exception("Dynamic address for %s was not found." % lsp)
+    subnet = ovn_nbctl("get Logical-Switch %s other_config:subnet" % (ls),
+                       OVN_NB)
     ovnutil.append_subnet_mask(address[1], subnet)
 
     link_linux_ns_to_mesos_ns(lsp)
@@ -34,9 +36,9 @@ def add_port(lsp, ls, gw):
     return address
 
 def link_linux_ns_to_mesos_ns(ns_name):
-    mesos_ns_path = '/var/run/mesos/isolators/network/cni/%s/ns'
-                    % os.environ['CNI_CONTAINERID']
-    ns_path = '/var/run/netns/%s' % ns_name
+    mesos_ns_path = ('/var/run/mesos/isolators/network/cni/%s/ns'
+                    % (os.environ['CNI_CONTAINERID']))
+    ns_path = '/var/run/netns/%s' % (ns_name)
     call_popen(['ln', '-s', mesos_ns_path, ns_path])
 
 def create_veth_pair(ns_name):
@@ -57,13 +59,14 @@ def set_ns_addresses(ns_name, mac, ip, gw):
     ip_netns_exec(ns_name, "ip route add default via %s" % gw)
 
 def del_port(lsp):
-    ovn_nbctl("lsp-del %s" % lsp, DB)
+    OVN_NB = ovnutil.get_ovn_nb()
+    ovn_nbctl("lsp-del %s" % lsp, OVN_NB)
     ovs_port = "%s_l" % lsp
     ovs_vsctl("del-port %s" % ovs_port)
-#    delete_ns(lsp_name)
+    delete_ns_symlink(lsp)
 
-def delete_ns(ns_name):
-    cmd = 'ip netns delete %s' % ns_name
+def delete_ns_symlink(ns_name):
+    cmd = 'rm /var/run/netns/%s' % ns_name
     call(cmd.split())
 
 def ip_netns_exec(ns_name, cmd):
@@ -91,7 +94,6 @@ def main():
                 "ip" : ""
             },
             "dns" : {
-                "nameservers" : ["127.0.1.1"],
             }
         }
         print json.dumps(ip_info)
