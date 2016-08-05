@@ -140,13 +140,13 @@ $MESOS_ROOT_DIRECTORY/build.
 * Start a Mesos master.
 
 ```
-./src/mesos-master --ip=$MASTER_IP --work_dir=/var/lib/mesos/master
+./mesos-master --ip=$MASTER_IP --work_dir=/var/lib/mesos/master
 ```
 
 * Start a Mesos agent.
 
 ```
-./src/mesos-agent --ip=$AGENT_IP --master=$MASTER_IP:5050 \
+./mesos-agent --ip=$AGENT_IP --master=$MASTER_IP:5050 \
 --work_dir=/var/lib/mesos/agent --isolation=filesystem/linux,docker/runtime \
 --image_providers=docker --network_cni_config_dir=$PATH_TO_CNI_CONFIG_DIR \
 --network_cni_plugins_dir=$PATH_TO_CNI_PLUGIN_DIR --launcher_dir=`pwd` \

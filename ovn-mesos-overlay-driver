@@ -23,7 +23,7 @@ CNI_TYPE = "./ovn-mesos-plugin"
 
 def plugin_init(args):
     """
-    Takes care of anything that needs to happen once and isn't handled by 
+    Takes care of anything that needs to happen once and isn't handled by
     gateway-init(). As of now, that only includes creating the distributed
     router to connect node logical switches.
     """

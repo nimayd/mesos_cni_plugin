@@ -1,0 +1,705 @@
+From f35cdc940e6b6cd896d014af585320728e689c48 Mon Sep 17 00:00:00 2001
+From: Nimay Desai <nimaydesai1@gmail.com>
+Date: Fri, 5 Aug 2016 15:17:30 -0700
+Subject: [RFC] Introducing experimental OVN integration for Mesos
+
+This commit introduces experimental support for OVN integration with Apache
+Mesos.  It is experimental because the network plugability infrastructure for
+Mesos is being continuously developed in the Mesos master branch.  Mesos does
+not yet have all the components necessary to allow usage of OVN as a complete
+container networking solution.  Mainly, it lacks the port mapping
+infrastructure to support North to South connectivity.
+
+With this commit, you can have clean East-West and South-North connectivity.
+INSTALL.Mesos.md includes instructions on how to use the setup scripts to
+create an OVN overlay network and attach Mesos nodes to the network.  It also
+includes instructions on how to set up the plugin and start Mesos so that
+containers automatically connect to the OVN network upon creation.
+
+Signed-off-by: Nimay Desai <nimaydesai1@gmail.com>
+---
+ INSTALL.Mesos.md                       | 176 +++++++++++++++++++++++++++++++
+ Makefile.am                            |   1 +
+ ovn/utilities/automake.mk              |   8 +-
+ ovn/utilities/ovn-mesos-overlay-driver | 182 +++++++++++++++++++++++++++++++++
+ ovn/utilities/ovn-mesos-plugin         | 105 +++++++++++++++++++
+ python/automake.mk                     |  15 ++-
+ python/ovn/__init__.py                 |   1 +
+ python/ovn/mesos/__init__.py           |   1 +
+ python/ovn/mesos/ovnutil.py            |  71 +++++++++++++
+ 9 files changed, 554 insertions(+), 6 deletions(-)
+ create mode 100644 INSTALL.Mesos.md
+ create mode 100755 ovn/utilities/ovn-mesos-overlay-driver
+ create mode 100755 ovn/utilities/ovn-mesos-plugin
+ create mode 100644 python/ovn/__init__.py
+ create mode 100644 python/ovn/mesos/__init__.py
+ create mode 100644 python/ovn/mesos/ovnutil.py
+
+diff --git a/INSTALL.Mesos.md b/INSTALL.Mesos.md
+new file mode 100644
+index 0000000..dbeee81
+--- /dev/null
++++ b/INSTALL.Mesos.md
+@@ -0,0 +1,176 @@
++How to Use Open vSwitch with Apache Mesos
++=========================================
++
++This document describes how to use Open Virtual Networking with Apache Mesos .
++This document assumes that you installed Open vSwitch by following [INSTALL.md]
++or by using the distribution packages such as .deb or .rpm.  Consult
++www.mesos.apache.org for instructions on how to install Mesos.
++
++
++Setup
++=====
++
++* Start the central components.
++
++OVN architecture has a central component which stores your networking intent
++in a database.  On one of your machines, with an IP Address of $CENTRAL_IP,
++where you have installed and started Open vSwitch, you will need to start some
++central components.
++
++Start ovn-northd daemon.  This daemon translates networking intent from Mesos
++stored in the OVN_Northbound database to logical flows in OVN_Southbound
++database.  It is also responsible for managing and dynamically allocating
++IP/MAC addresses for Mesos containers.
++
++```
++/usr/share/openvswitch/scripts/ovn-ctl start_northd
++```
++
++* One time setup.
++
++On each host, where you plan to spawn your containers, you will need to
++run the following command once.  (You need to run it again if your OVS database
++gets cleared.  It is harmless to run it again in any case.)
++
++$LOCAL_IP in the below command is the IP address via which other hosts
++can reach this host.  This acts as your local tunnel endpoint.
++
++$ENCAP_TYPE is the type of tunnel that you would like to use for overlay
++networking.  The options are "geneve" or "stt".  (Please note that your
++kernel should have support for your chosen $ENCAP_TYPE.  Both geneve
++and stt are part of the Open vSwitch kernel module that is compiled from this
++repo.  If you use the Open vSwitch kernel module from upstream Linux,
++you will need a minumum kernel version of 3.18 for geneve.  There is no stt
++support in upstream Linux.  You can verify whether you have the support in your
++kernel by doing a "lsmod | grep $ENCAP_TYPE".)
++
++```
++ovs-vsctl set Open_vSwitch . external_ids:ovn-remote="tcp:$CENTRAL_IP:6641" \
++  external_ids:ovn-nb="tcp:$CENTRAL_IP:6641" external_ids:ovn-encap-ip=$LOCAL_IP external_ids:ovn-encap-type="$ENCAP_TYPE"
++```
++
++And finally, start the ovn-controller.  (You need to run the below command
++on every boot)
++
++```
++/usr/share/openvswitch/scripts/ovn-ctl start_controller
++```
++
++* Initialize the OVN network using the OVN network driver.
++
++Run the OVN network driver with the "plugin-init" subcommand once on any host.
++Running "ovn-nbctl show" should now display a single logical router called
++"mesos-router."
++
++```
++PYTHONPATH=$OVS_PYTHON_LIBS_PATH ovn-mesos-overlay-driver plugin-init
++```
++
++* Add each of the hosts to the OVN network.
++
++On each host where you will have a Mesos agent/master running, run the
++OVN network driver with the "node-init" subcommand. $SUBNET is the subnet
++(e.g. 172.16.1.0/24) of your host, $CLUSTER_SUBNET is the subnet of your entire
++Mesos cluster (e.g. 172.16.0.0/16), gateway will be the IPv4 address of your
++host's router port (e.g. 172.16.1.1/24), and $PATH_TO_CNI_CONFIG_DIR is the
++absolute path to the directory where you would like the CNI configuration file
++to be created.
++
++```
++PYTHONPATH=$OVS_PYTHON_LIBS_PATH ovn-mesos-overlay-driver node-init \
++--subnet=$SUBNET --cluster_subnet=$CLUSTER_SUBNET --gateway=$GATEWAY_IP \
++--config_dir=$PATH_TO_CNI_CONFIG_DIR
++```
++
++The driver will take the necessary steps to connect a host to mesos-router,
++allowing for basic-east west traffic.  At this point, running an
++"ovn-nbctl show", should now also display a logical switch with the name
++"${OVS_SYSTEM_ID}_agent" and a logical port called "ovn-mesos" for each host
++that the "node-init" subcommand was run on.
++
++* Configure a gateway host for South-North traffic.
++
++WARNING: The following command will cause you to lose connectivity through
++eth1 on the host which it is executed on.  Do not execute this command if
++you require connectivity through eth1 for other purposes (e.g. SSH connection
++to your host).
++
++If you want to configure a gateway to allow South-North traffic for your
++containers, run the OVN network driver with the "gateway-init" subcommand on
++your gateway host.  You will need to provide the cluster subnet, the IPv4
++address of your eth1 device (with subnet mask), and the IPv4 address of your
++eth1's gateway (with subnet mask) as command line arguments.  North-South
++traffic is not currently supported.  See "Note on North-Sourth traffic" to
++learn why.
++
++```
++PYTHONPATH=$OVS_PYTHON_LIBS_PATH ovn-mesos-overlay-driver gateway-init \
++--cluster_subnet=$CLUSTER_SUBNET --eth1_ip=$ETH1_IP --eth1_gw_ip=$ETH1_GW_IP
++```
++
++* Create a CNI plugin directory on agent nodes.
++
++On each node where you plan to run a Mesos agent, create a directory for the
++CNI plugin and copy the plugin executable along with the ovnutil file into the
++new directory.
++
++```
++mkdir -p $PATH_TO_CNI_PLUGIN_DIR
++cp $PATH_TO_OVS_DIR/ovn/utilities/ovn-mesos-plugin $PATH_TO_CNI_PLUGIN_DIR/ovn-mesos-plugin
++cp $OVS_PYTHON_LIBS_PATH/ovn/mesos/ovnutil.py $PATH_TO_CNI_PLUGIN_DIR/ovnutil.py
++```
++
++Running Mesos
++=============
++
++To run Mesos, you will need know the IP addresses of your master and agent
++nodes.  $MASTER_IP and $AGENT_IP are dynamically allocated, so you can find
++them with the following commands, respectively:
++
++```
++ovn-nbctl list Logical-Switch-Port master
++ovn-nbctl list Logical-Switch-Port ${OVS_SYSTEM_ID}_agent
++```
++
++The addresses will be under the "dynamic_addresses" column.
++
++* Start a Mesos master.
++
++```
++./mesos-master --ip=$MASTER_IP --work_dir=/var/lib/mesos/master
++```
++
++* Start a Mesos agent.
++
++```
++./mesos-agent --ip=$AGENT_IP --master=$MASTER_IP:5050 \
++--work_dir=/var/lib/mesos/agent --isolation=filesystem/linux,docker/runtime \
++--image_providers=docker --network_cni_config_dir=$PATH_TO_CNI_CONFIG_DIR \
++--network_cni_plugins_dir=$PATH_TO_CNI_PLUGIN_DIR --launcher_dir=`pwd` \
++--executor_registration_timeout=5mins
++```
++
++Note on North-South traffic
++===========================
++
++As of now, Mesos does not support port-mapping.  As a result, we cannot direct
++North-South traffic to the correct container.  In the future, one could imagine
++Mesos providing some sort of API to allow access to container-host port
++mappings.  These port mappings could be used to create load balancing rules to
++direct North-South traffic to the appopriate containers.
++
++Note on $OVS_PYTHON_LIBS_PATH
++=============================
++
++$OVS_PYTHON_LIBS_PATH should point to the directory where Open vSwitch
++python modules are installed.  If you installed Open vSwitch python
++modules via the debian package of 'python-openvswitch' or via pip by
++running 'pip install ovs', you do not need to specify the path.
++If you installed it by following the instructions in INSTALL.md, you
++should specify the path.  The path in that case depends on the options passed
++to ./configure.  (It is usually either '/usr/share/openvswitch/python' or
++'/usr/local/share/openvswitch/python'.)
++
++[INSTALL.md]: INSTALL.md
++[openvswitch-switch.README.Debian]: debian/openvswitch-switch.README.Debian
++[README.RHEL]: rhel/README.RHEL
+diff --git a/Makefile.am b/Makefile.am
+index 49010b3..398232f 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -78,6 +78,7 @@ docs = \
+ 	INSTALL.Fedora.md \
+ 	INSTALL.KVM.md \
+ 	INSTALL.Libvirt.md \
++	INSTALL.Mesos.md \
+ 	INSTALL.NetBSD.md \
+ 	INSTALL.RHEL.md \
+ 	INSTALL.SELinux.md \
+diff --git a/ovn/utilities/automake.mk b/ovn/utilities/automake.mk
+index d84368c..78b9782 100644
+--- a/ovn/utilities/automake.mk
++++ b/ovn/utilities/automake.mk
+@@ -8,16 +8,20 @@ man_MANS += \
+ 
+ MAN_ROOTS += ovn/utilities/ovn-sbctl.8.in
+ 
+-# Docker drivers
++# Docker and Mesos drivers
+ bin_SCRIPTS += \
+     ovn/utilities/ovn-docker-overlay-driver \
+-    ovn/utilities/ovn-docker-underlay-driver
++    ovn/utilities/ovn-docker-underlay-driver \
++    ovn/utilities/ovn-mesos-overlay-driver \
++    ovn/utilities/ovn-mesos-plugin
+ 
+ EXTRA_DIST += \
+     ovn/utilities/ovn-ctl \
+     ovn/utilities/ovn-ctl.8.xml \
+     ovn/utilities/ovn-docker-overlay-driver \
+     ovn/utilities/ovn-docker-underlay-driver \
++    ovn/utilities/ovn-mesos-overlay-driver \
++    ovn/utilities/ovn-mesos-plugin \
+     ovn/utilities/ovn-nbctl.8.xml
+ 
+ DISTCLEANFILES += \
+diff --git a/ovn/utilities/ovn-mesos-overlay-driver b/ovn/utilities/ovn-mesos-overlay-driver
+new file mode 100755
+index 0000000..efd9666
+--- /dev/null
++++ b/ovn/utilities/ovn-mesos-overlay-driver
+@@ -0,0 +1,182 @@
++#!/usr/bin/env python
++
++import argparse
++import json
++import os
++
++import ovn.mesos.ovnutil as ovnutil
++from ovn.mesos.ovnutil import ovn_nbctl, ovs_vsctl, call_popen
++
++# OVN network configuration information.
++OVN_NB = ""
++OVN_BRIDGE = "br-int"
++OVN_GATEWAY_LR = "mesos-gw-router"
++OVN_DISTRIBUTED_LR = "mesos-router"
++OVS_PORT = "ovs-mesos"
++
++# For the CNI plugin configuration file.
++CONFIG_FNAME = "ovn-mesos-config.json"
++CONFIG = {}
++CNI_VERSION = "0.1.0"
++CNI_NETWORK = "ovn"
++CNI_TYPE = "./ovn-mesos-plugin"
++
++def plugin_init(args):
++    """
++    Takes care of anything that needs to happen once and isn't handled by
++    gateway-init(). As of now, that only includes creating the distributed
++    router to connect node logical switches.
++    """
++    OVN_NB = ovnutil.get_ovn_nb()
++    ovn_nbctl("create Logical_Router name=%s" % OVN_DISTRIBUTED_LR,
++              OVN_NB)
++
++def create_cni_config(args):
++    """
++    Creates and initializes a configuration file for the CNI plugin.
++    """
++    CONFIG['cniVersion'] = CNI_VERSION
++    CONFIG['name'] = CNI_NETWORK
++    CONFIG['type'] = CNI_TYPE
++    CONFIG['db'] = ovnutil.get_ovn_nb()
++    CONFIG['gateway'] = args.gateway.split('/')[0]
++    CONFIG['subnet'] = args.subnet
++    CONFIG['switch'] = ovs_vsctl("get Open_vSwitch . external_ids:system-id")
++
++    if not os.path.exists(args.config_dir):
++        os.makedirs(args.config_dir)
++    config_path = os.path.join(args.config_dir, CONFIG_FNAME)
++    with open(config_path, 'w') as config_file:
++        json.dump(CONFIG, config_file)
++
++def node_init(args):
++    """
++    Creates a logical switch with the given subnet. Attaches switch to
++    distributed router. Creates configuration file for Mesos CNI isolator.
++    """
++    OVN_NB = ovnutil.get_ovn_nb()
++
++    create_cni_config(args)
++    ls = CONFIG['switch']
++    subnet = args.subnet
++    cluster_subnet = args.cluster_subnet
++    gateway = args.gateway
++    gw_ip_only = args.gateway.split('/')[0]
++
++    # Add a logical switch for the agent. Connect the logical switch to a
++    # distributed router.
++    ovn_nbctl("ls-add %s -- set Logical_Switch %s other_config:subnet=%s"
++              % (ls, ls, subnet), OVN_NB)
++    ovnutil.connect_ls_to_lr(ls, OVN_DISTRIBUTED_LR, ls, gateway,
++                             ovnutil.random_mac(), OVN_NB)
++
++    # Add a logical switch port for the agent.
++    lsp = "%s_agent" % ls
++    ovn_nbctl("lsp-add %s %s -- lsp-set-addresses %s dynamic" % (ls, lsp, lsp),
++              OVN_NB)
++    mac, ip4 = ovnutil.get_lsp_dynamic_address(lsp, OVN_NB)
++    ip4 = ovnutil.append_subnet_mask(ip4, subnet)
++    ovs_vsctl("add-port %s %s -- set interface %s type=internal mac=%s "
++              "external_ids:iface-id=%s"
++              % (OVN_BRIDGE, OVS_PORT, OVS_PORT, mac, lsp))
++    command = "ip address add %s dev %s" % (ip4, OVS_PORT)
++    call_popen(command.split())
++    command = "ip link set dev %s up" % (OVS_PORT)
++    call_popen(command.split())
++
++    command = "ip route add %s via %s" % (cluster_subnet, gw_ip_only)
++    call_popen(command.split())
++
++def gateway_init(args):
++    """
++    Setup gateway router.
++    """
++    OVN_NB = ovnutil.get_ovn_nb()
++
++    ovs_sysid = ovs_vsctl("get Open_vSwitch . external_ids:system-id")
++    cluster_subnet = args.cluster_subnet
++    eth1_ip = args.eth1_ip
++    eth1_gw_ip = args.eth1_gw_ip
++
++    # Create a logical switch "join" and connect it to the DR.
++    ovn_nbctl("ls-add join", OVN_NB)
++    ovnutil.connect_ls_to_lr("join", OVN_DISTRIBUTED_LR, "join0",
++                             "20.0.0.1/24", ovnutil.random_mac(), OVN_NB)
++
++    # Create a gateway router and connect "join" to it.
++    ovn_nbctl("create Logical_Router name=%s options:chassis=%s"
++              % (OVN_GATEWAY_LR, ovs_sysid), OVN_NB)
++    ovnutil.connect_ls_to_lr("join", OVN_GATEWAY_LR, "join1", "20.0.0.2/24",
++                             ovnutil.random_mac(), OVN_NB)
++
++    # Install static routes.
++    ovn_nbctl("-- --id=@lrt create Logical_Router_Static_Route "
++              "ip_prefix=%s nexthop=20.0.0.1 -- add Logical_Router "
++              "%s static_routes @lrt" % (cluster_subnet, OVN_GATEWAY_LR),
++              OVN_NB)
++    ovn_nbctl("-- --id=@lrt create Logical_Router_Static_Route "
++              "ip_prefix=0.0.0.0/0 nexthop=%s -- add Logical_Router "
++              "%s static_routes @lrt" % (eth1_gw_ip, OVN_GATEWAY_LR), OVN_NB)
++    if eth1_gw_ip:
++        ovn_nbctl("-- --id=@lrt create Logical_Router_Static_Route "
++                  "ip_prefix=0.0.0.0/0 nexthop=20.0.0.2 -- add Logical_Router "
++                  "%s static_routes @lrt" % (OVN_DISTRIBUTED_LR), OVN_NB)
++
++    # Create a logical switch "external" and connect it to GWR using eth1's IP
++    # for the logical router port. Add eth1 as a logical switch port to
++    # "external" and set its address to "unknown".
++    ovn_nbctl("ls-add external", OVN_NB)
++    ovnutil.connect_ls_to_lr("external", OVN_GATEWAY_LR, "external", eth1_ip,
++                             ovnutil.random_mac(), OVN_NB)
++    ovn_nbctl("lsp-add external eth1 -- lsp-set-addresses eth1 unknown",
++              OVN_NB)
++    command = "ifconfig eth1 0.0.0.0"
++    call_popen(command.split())
++    ovs_vsctl("add-port %s eth1 -- set interface eth1 "
++              "external_ids:iface-id=eth1" % (OVN_BRIDGE))
++
++    # Create an SNAT rule directing cluster subnet traffic to eth1's ip.
++    ovn_nbctl("-- --id=@nat create nat type=snat logical_ip=%s \
++              external_ip=%s -- add Logical-Router %s nat @nat"
++              % (cluster_subnet, eth1_ip.split("/")[0] , OVN_GATEWAY_LR),
++              OVN_NB)
++
++def main():
++    parser = argparse.ArgumentParser()
++    subparsers = parser.add_subparsers(title='Subcommands',
++                                       dest='command_name')
++
++    # Parser for sub-command plugin-init
++    parser_plugin_init = subparsers.add_parser('plugin-init',
++                                               help="Initialize OVN network")
++    parser_plugin_init.set_defaults(db=None, func=plugin_init)
++
++    # Parser for sub-command node-init
++    parser_node_init = subparsers.add_parser('node-init',
++                                             help="Initialize a node")
++    parser_node_init.add_argument('--subnet', help="Node's IPv4 subnet.",
++                                  required=True)
++    parser_node_init.add_argument("--cluster_subnet", help="Cluster subnet",
++                                  required=True)
++    parser_node_init.add_argument("--config_dir", required=True,
++                                  help="CNI configuration file directory")
++    parser_node_init.add_argument('--gateway', required=True,
++                                  help="Node's gateway IPv4 address.")
++    parser_node_init.set_defaults(func=node_init)
++
++    # Parser for sub-command gateway-init
++    parser_gateway_init = subparsers.add_parser('gateway-init',
++                                                help="Initialize gateway")
++    parser_gateway_init.add_argument("--cluster_subnet", help="Cluster subnet",
++                                    required=True)
++    parser_gateway_init.add_argument("--eth1_ip", help="eth1's ip address.",
++                                     required=True)
++    parser_gateway_init.add_argument("--eth1_gw_ip",
++                                     help="eth1's gateway's ip address.")
++    parser_gateway_init.set_defaults(func=gateway_init)
++
++    args = parser.parse_args()
++    args.func(args)
++
++if __name__ == '__main__':
++    main()
+diff --git a/ovn/utilities/ovn-mesos-plugin b/ovn/utilities/ovn-mesos-plugin
+new file mode 100755
+index 0000000..ef30aa1
+--- /dev/null
++++ b/ovn/utilities/ovn-mesos-plugin
+@@ -0,0 +1,105 @@
++#!/usr/bin/env python
++import json
++import os
++import subprocess
++import sys
++from subprocess import call
++
++import ovnutil
++from ovnutil import ovn_nbctl, ovs_vsctl, call_popen
++
++OVN_NB = ""
++OVN_BRIDGE = "br-int"
++
++def add_port(lsp, ls, gw):
++    OVN_NB = ovnutil.get_ovn_nb()
++    ovn_nbctl("lsp-add %s %s" % (ls, lsp), OVN_NB)
++    ovn_nbctl("lsp-set-addresses %s dynamic" % (lsp), OVN_NB)
++
++    # Address is of the form: (MAC, IP)
++    address = ovnutil.get_lsp_dynamic_address(lsp, OVN_NB)
++    if not address:
++        raise Exception("Dynamic address for %s was not found." % lsp)
++    subnet = ovn_nbctl("get Logical-Switch %s other_config:subnet" % (ls),
++                       OVN_NB)
++    address[1] = ovnutil.append_subnet_mask(address[1], subnet)
++
++    link_linux_ns_to_mesos_ns(lsp)
++    create_veth_pair(lsp)
++
++    ovs_vsctl("--may-exist add-port %s %s_l" % (OVN_BRIDGE, lsp))
++    ovs_vsctl("set interface %s_l external_ids:iface-id=%s" % (lsp, lsp))
++
++    move_veth_pair_into_ns(lsp)
++    set_ns_addresses(lsp, address[0], address[1], gw)
++
++    return address
++
++def link_linux_ns_to_mesos_ns(ns_name):
++    mesos_ns_path = ('/var/run/mesos/isolators/network/cni/%s/ns'
++                    % (os.environ['CNI_CONTAINERID']))
++    ns_path = '/var/run/netns/%s' % (ns_name)
++    call_popen(['ln', '-s', mesos_ns_path, ns_path])
++
++def create_veth_pair(ns_name):
++    command = "ip link add %s_l type veth peer name %s_c" % (ns_name, ns_name)
++    call(command.split())
++
++def move_veth_pair_into_ns(ns_name):
++    call_popen(['ip', 'link', 'set', "%s_l" % ns_name, 'up'])
++    call_popen(['ip', 'link', 'set', "%s_c" % ns_name, 'netns', ns_name])
++    ip_netns_exec(ns_name, "ip link set dev %s_c name eth0" % (ns_name))
++    ip_netns_exec(ns_name, "ip link set eth0 up")
++    ip_netns_exec(ns_name, "ip link set dev eth0 mtu 1440")
++
++def set_ns_addresses(ns_name, mac, ip, gw):
++    ip_netns_exec(ns_name, "ip addr add %s dev eth0" % (ip))
++    ip_netns_exec(ns_name, 'ip link set dev eth0 address %s'
++                  % (mac.strip('"')))
++    ip_netns_exec(ns_name, "ip route add default via %s" % gw)
++
++def del_port(lsp):
++    OVN_NB = ovnutil.get_ovn_nb()
++    ovn_nbctl("lsp-del %s" % lsp, OVN_NB)
++    ovs_port = "%s_l" % lsp
++    ovs_vsctl("del-port %s" % ovs_port)
++    delete_ns_symlink(lsp)
++
++def delete_ns_symlink(ns_name):
++    cmd = 'rm /var/run/netns/%s' % ns_name
++    call(cmd.split())
++
++def ip_netns_exec(ns_name, cmd):
++    arg_list = ['ip', 'netns', 'exec', ns_name] + cmd.split()
++    call_popen(arg_list)
++
++def main():
++    raw_config = ''.join(sys.stdin.readlines())
++    config = json.loads(raw_config.replace('\n', '').replace('\t', ''))
++
++    if (os.environ['CNI_COMMAND'] == 'ADD'):
++        mac, ip4 = add_port(os.environ['CNI_CONTAINERID'][0:7],
++                            config['switch'], config['gateway'])
++
++        ip_info = {
++            "cniVersion" : "0.1.0",
++            "ip4" : {
++                "ip" : ip4,
++                "gateway" : config['gateway'],
++                "routes" : [
++                    { "dst" : "0.0.0.0/0" }
++                ]
++            },
++            "ip6" : {
++                "ip" : ""
++            },
++            "dns" : {
++            }
++        }
++        print json.dumps(ip_info)
++
++    elif (os.environ['CNI_COMMAND'] == 'DEL'):
++        del_port(os.environ['CNI_CONTAINERID'][0:7])
++
++if __name__ == '__main__':
++    main()
+diff --git a/python/automake.mk b/python/automake.mk
+index 1c8fa38..dae25d2 100644
+--- a/python/automake.mk
++++ b/python/automake.mk
+@@ -36,6 +36,11 @@ ovs_pyfiles = \
+ 	python/ovs/version.py \
+ 	python/ovs/vlog.py
+ 
++ovn_pyfiles = \
++    python/ovn/__init__.py \
++    python/ovn/mesos/__init__.py \
++    python/ovn/mesos/ovnutil.py
++
+ # These python files are used at build time but not runtime,
+ # so they are not installed.
+ EXTRA_DIST += \
+@@ -50,7 +55,7 @@ EXTRA_DIST += \
+ # C extension support.
+ EXTRA_DIST += python/ovs/_json.c
+ 
+-PYFILES = $(ovs_pyfiles) python/ovs/dirs.py $(ovstest_pyfiles)
++PYFILES = $(ovs_pyfiles) $(ovn_pyfiles) python/ovs/dirs.py $(ovstest_pyfiles)
+ EXTRA_DIST += $(PYFILES)
+ PYCOV_CLEAN_FILES += $(PYFILES:.py=.py,cover)
+ 
+@@ -62,9 +67,10 @@ FLAKE8_PYFILES += \
+ 	python/ovs/dirs.py.template
+ 
+ if HAVE_PYTHON
+-nobase_pkgdata_DATA = $(ovs_pyfiles) $(ovstest_pyfiles)
++nobase_pkgdata_DATA = $(ovs_pyfiles) $(ovn_pyfiles) $(ovstest_pyfiles)
+ ovs-install-data-local:
+ 	$(MKDIR_P) python/ovs
++	$(MKDIR_P) python/ovn
+ 	sed \
+ 		-e '/^##/d' \
+                 -e 's,[@]pkgdatadir[@],$(pkgdatadir),g' \
+@@ -76,13 +82,14 @@ ovs-install-data-local:
+ 		< $(srcdir)/python/ovs/dirs.py.template \
+ 		> python/ovs/dirs.py.tmp
+ 	$(MKDIR_P) $(DESTDIR)$(pkgdatadir)/python/ovs
++	$(MKDIR_P) $(DESTDIR)$(pkgdatadir)/python/ovn
+ 	$(INSTALL_DATA) python/ovs/dirs.py.tmp $(DESTDIR)$(pkgdatadir)/python/ovs/dirs.py
+ 	rm python/ovs/dirs.py.tmp
+ 
+-python-sdist: $(srcdir)/python/ovs/version.py $(ovs_pyfiles) python/ovs/dirs.py
++python-sdist: $(srcdir)/python/ovs/version.py $(ovs_pyfiles) $(ovn_pyfiles) python/ovs/dirs.py
+ 	(cd python/ && $(PYTHON) setup.py sdist)
+ 
+-pypi-upload: $(srcdir)/python/ovs/version.py $(ovs_pyfiles) python/ovs/dirs.py
++pypi-upload: $(srcdir)/python/ovs/version.py $(ovs_pyfiles) $(ovn_pyfiles) python/ovs/dirs.py
+ 	(cd python/ && $(PYTHON) setup.py sdist upload)
+ else
+ ovs-install-data-local:
+diff --git a/python/ovn/__init__.py b/python/ovn/__init__.py
+new file mode 100644
+index 0000000..218d892
+--- /dev/null
++++ b/python/ovn/__init__.py
+@@ -0,0 +1 @@
++# This file intentionally left blank.
+diff --git a/python/ovn/mesos/__init__.py b/python/ovn/mesos/__init__.py
+new file mode 100644
+index 0000000..218d892
+--- /dev/null
++++ b/python/ovn/mesos/__init__.py
+@@ -0,0 +1 @@
++# This file intentionally left blank.
+diff --git a/python/ovn/mesos/ovnutil.py b/python/ovn/mesos/ovnutil.py
+new file mode 100644
+index 0000000..19dfe77
+--- /dev/null
++++ b/python/ovn/mesos/ovnutil.py
+@@ -0,0 +1,71 @@
++import random
++import subprocess
++from subprocess import call
++
++def random_mac():
++    """
++    Generates a random MAC address. Used when dynamic addressing is not
++    possible (logical router ports for example).
++    """
++    return '"02:%02x:%02x:%02x:%02x:%02x"' % (random.randint(0,255),
++                                              random.randint(0,255),
++                                              random.randint(0,255),
++                                              random.randint(0,255),
++                                              random.randint(0,255))
++
++def append_subnet_mask(ip, subnet):
++    mask = subnet.split("/")[1].strip('"\n')
++    return "%s/%s" % (ip, mask)
++
++def call_popen(cmd_list):
++    child = subprocess.Popen(cmd_list, stdout=subprocess.PIPE,
++                             stderr=subprocess.PIPE)
++    output = child.communicate()
++    if child.returncode:
++        raise RuntimeError("Fatal error executing %s: %s"
++                           % (" ".join(cmd_list), output[1]))
++    if len(output) == 0 or output[0] == None:
++        output = ""
++    else:
++        output = output[0].strip()
++    return output
++
++def call_prog(prog, args_list):
++    cmd = [prog, "--timeout=5", "-vconsole:off"] + args_list
++    return call_popen(cmd)
++
++def ovn_nbctl(cmd_str, db=None):
++    db_arg = "--db=%s" % (db) if db else ""
++    arg_list = ("%s %s" % (db_arg, cmd_str)).split()
++    return call_prog("ovn-nbctl", arg_list)
++
++def ovs_vsctl(cmd_str):
++    return call_prog("ovs-vsctl", cmd_str.split()).strip('"\n')
++
++def get_ovn_nb():
++    return ovs_vsctl("get Open_vSwitch . external_ids:ovn-nb")
++
++def get_lsp_dynamic_address(lsp, db):
++    """
++    Returns a lsp's dynamic addresses in the form (mac_str, ip_str).
++    """
++    cmd = "get Logical-Switch-Port %s dynamic_addresses" % lsp
++    result = ovn_nbctl(cmd, db)
++    address = result.strip('"\n').split()
++    if len(address) != 2:
++        return ()
++    # Wrap MAC in quotes so that the shell doesn't complain when we string
++    # substitute it in a command.
++    address[0] = '"%s"' % (address[0])
++    return address
++
++def connect_ls_to_lr(ls, lr, rp, rp_ip, rp_mac, db):
++    """
++    Connect a logical switch to a logical router by creating a logical switch
++    port and a logical router port peer.
++    """
++    ovn_nbctl("-- --id=@lrp create Logical_Router_port name=%s network=%s "
++              "mac=%s -- add Logical_Router %s ports @lrp -- lsp-add %s "
++              "rp-%s" % (rp, rp_ip, rp_mac, lr, ls, rp), db)
++    ovn_nbctl("set Logical-Switch-Port rp-%s type=router "
++              "options:router-port=%s addresses=%s" % (rp, rp, rp_mac), db)
+-- 
+1.9.1
+
