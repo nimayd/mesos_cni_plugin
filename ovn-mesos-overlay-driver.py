@@ -19,7 +19,7 @@ CONFIG_FNAME = "ovn-mesos-config.json"
 CONFIG = {}
 CNI_VERSION = "0.1.0"
 CNI_NETWORK = "ovn"
-CNI_TYPE = "./ovn-mesos-overlay-driver.py"
+CNI_TYPE = "./ovn-mesos-plugin"
 
 def plugin_init(args):
     """
@@ -100,24 +100,24 @@ def gateway_init(args):
     # Create a logical switch "join" and connect it to the DR.
     ovn_nbctl("ls-add join", OVN_NB)
     ovnutil.connect_ls_to_lr("join", OVN_DISTRIBUTED_LR, "join0",
-                             "169.0.0.1/24", ovnutil.random_mac(), OVN_NB)
+                             "20.0.0.1/24", ovnutil.random_mac(), OVN_NB)
 
     # Create a gateway router and connect "join" to it.
     ovn_nbctl("create Logical_Router name=%s options:chassis=%s"
               % (OVN_GATEWAY_LR, ovs_sysid), OVN_NB)
-    ovnutil.connect_ls_to_lr("join", OVN_GATEWAY_LR, "join1", "169.0.0.2/24",
+    ovnutil.connect_ls_to_lr("join", OVN_GATEWAY_LR, "join1", "20.0.0.2/24",
                              ovnutil.random_mac(), OVN_NB)
 
     # Install static routes.
     ovn_nbctl("-- --id=@lrt create Logical_Router_Static_Route "
-              "ip_prefix=%s nexthop=169.0.0.1 -- add Logical_Router "
+              "ip_prefix=%s nexthop=20.0.0.1 -- add Logical_Router "
               "%s static_routes @lrt" % (cluster_subnet, OVN_GATEWAY_LR),
               OVN_NB)
     ovn_nbctl("-- --id=@lrt create Logical_Router_Static_Route "
               "ip_prefix=0.0.0.0/0 nexthop=%s -- add Logical_Router "
               "%s static_routes @lrt" % (eth1_ip, OVN_GATEWAY_LR), OVN_NB)
     ovn_nbctl("-- --id=@lrt create Logical_Router_Static_Route "
-              "ip_prefix=0.0.0.0/0 nexthop=169.0.0.2 -- add Logical_Router "
+              "ip_prefix=0.0.0.0/0 nexthop=20.0.0.2 -- add Logical_Router "
               "%s static_routes @lrt" % (OVN_DISTRIBUTED_LR), OVN_NB)
 
     # Create a logical switch "external" and connect it to GWR using eth1's IP

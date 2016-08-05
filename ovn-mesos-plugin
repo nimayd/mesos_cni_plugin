@@ -22,7 +22,7 @@ def add_port(lsp, ls, gw):
         raise Exception("Dynamic address for %s was not found." % lsp)
     subnet = ovn_nbctl("get Logical-Switch %s other_config:subnet" % (ls),
                        OVN_NB)
-    ovnutil.append_subnet_mask(address[1], subnet)
+    address[1] = ovnutil.append_subnet_mask(address[1], subnet)
 
     link_linux_ns_to_mesos_ns(lsp)
     create_veth_pair(lsp)
@@ -54,8 +54,8 @@ def move_veth_pair_into_ns(ns_name):
 
 def set_ns_addresses(ns_name, mac, ip, gw):
     ip_netns_exec(ns_name, "ip addr add %s dev eth0" % (ip))
-    ip_netns_exec(ns_name, "ip addr add %s ip link set dev eth0 address %s"
-                  % (ip, mac))
+    ip_netns_exec(ns_name, 'ip link set dev eth0 address %s'
+                  % (mac.strip('"')))
     ip_netns_exec(ns_name, "ip route add default via %s" % gw)
 
 def del_port(lsp):
@@ -78,8 +78,8 @@ def main():
     config = json.loads(raw_config.replace('\n', '').replace('\t', ''))
 
     if (os.environ['CNI_COMMAND'] == 'ADD'):
-        mac, ip4 = add_port(os.environ['CNI_CONTAINERID'], config['switch'],
-                            config['gateway'])
+        mac, ip4 = add_port(os.environ['CNI_CONTAINERID'][0:7],
+                            config['switch'], config['gateway'])
 
         ip_info = {
             "cniVersion" : "0.1.0",
@@ -99,7 +99,7 @@ def main():
         print json.dumps(ip_info)
 
     elif (os.environ['CNI_COMMAND'] == 'DEL'):
-        del_port(os.environ['CNI_CONTAINERID'])
+        del_port(os.environ['CNI_CONTAINERID'][0:7])
 
 if __name__ == '__main__':
     main()
