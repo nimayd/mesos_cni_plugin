@@ -22,8 +22,6 @@ def call_popen(cmd_list):
                              stderr=subprocess.PIPE)
     output = child.communicate()
     if child.returncode:
-        with open("error_report", "w") as f:
-            f.write("Command %s failed: %s" % (' '.join(cmd_list), output[1]))
         raise RuntimeError("Fatal error executing %s: %s"
                            % (" ".join(cmd_list), output[1]))
     if len(output) == 0 or output[0] == None:

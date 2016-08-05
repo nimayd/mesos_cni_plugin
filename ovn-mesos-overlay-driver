@@ -4,8 +4,8 @@ import argparse
 import json
 import os
 
-import ovnutil
-from ovnutil import ovn_nbctl, ovs_vsctl, call_popen
+import ovn.mesos.ovnutil as ovnutil
+from ovn.mesos.ovnutil import ovn_nbctl, ovs_vsctl, call_popen
 
 # OVN network configuration information.
 OVN_NB = ""
@@ -96,6 +96,7 @@ def gateway_init(args):
     ovs_sysid = ovs_vsctl("get Open_vSwitch . external_ids:system-id")
     cluster_subnet = args.cluster_subnet
     eth1_ip = args.eth1_ip
+    eth1_gw_ip = args.eth1_gw_ip
 
     # Create a logical switch "join" and connect it to the DR.
     ovn_nbctl("ls-add join", OVN_NB)
@@ -115,10 +116,11 @@ def gateway_init(args):
               OVN_NB)
     ovn_nbctl("-- --id=@lrt create Logical_Router_Static_Route "
               "ip_prefix=0.0.0.0/0 nexthop=%s -- add Logical_Router "
-              "%s static_routes @lrt" % (eth1_ip, OVN_GATEWAY_LR), OVN_NB)
-    ovn_nbctl("-- --id=@lrt create Logical_Router_Static_Route "
-              "ip_prefix=0.0.0.0/0 nexthop=20.0.0.2 -- add Logical_Router "
-              "%s static_routes @lrt" % (OVN_DISTRIBUTED_LR), OVN_NB)
+              "%s static_routes @lrt" % (eth1_gw_ip, OVN_GATEWAY_LR), OVN_NB)
+    if eth1_gw_ip:
+        ovn_nbctl("-- --id=@lrt create Logical_Router_Static_Route "
+                  "ip_prefix=0.0.0.0/0 nexthop=20.0.0.2 -- add Logical_Router "
+                  "%s static_routes @lrt" % (OVN_DISTRIBUTED_LR), OVN_NB)
 
     # Create a logical switch "external" and connect it to GWR using eth1's IP
     # for the logical router port. Add eth1 as a logical switch port to
@@ -132,6 +134,12 @@ def gateway_init(args):
     call_popen(command.split())
     ovs_vsctl("add-port %s eth1 -- set interface eth1 "
               "external_ids:iface-id=eth1" % (OVN_BRIDGE))
+
+    # Create an SNAT rule directing cluster subnet traffic to eth1's ip.
+    ovn_nbctl("-- --id=@nat create nat type=snat logical_ip=%s \
+              external_ip=%s -- add Logical-Router %s nat @nat"
+              % (cluster_subnet, eth1_ip.split("/")[0] , OVN_GATEWAY_LR),
+              OVN_NB)
 
 def main():
     parser = argparse.ArgumentParser()
@@ -163,6 +171,8 @@ def main():
                                     required=True)
     parser_gateway_init.add_argument("--eth1_ip", help="eth1's ip address.",
                                      required=True)
+    parser_gateway_init.add_argument("--eth1_gw_ip",
+                                     help="eth1's gateway's ip address.")
     parser_gateway_init.set_defaults(func=gateway_init)
 
     args = parser.parse_args()

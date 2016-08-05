@@ -97,24 +97,27 @@ to your host).
 
 If you want to configure a gateway to allow South-North traffic for your
 containers, run the OVN network driver with the "gateway-init" subcommand on
-the host your gateway host.  You will need to provide the cluster subnet and
-IPv4 address of your eth1 device (with subnet mask) as command line arguments.
-North-South traffic is not currently supported.  See "Note on North-Sourth
-traffic" to learn why.
+your gateway host.  You will need to provide the cluster subnet, the IPv4
+address of your eth1 device (with subnet mask), and the IPv4 address of your
+eth1's gateway (with subnet mask) as command line arguments.  North-South
+traffic is not currently supported.  See "Note on North-Sourth traffic" to
+learn why.
 
 ```
 PYTHONPATH=$OVS_PYTHON_LIBS_PATH ovn-mesos-overlay-driver gateway-init \
---cluster_subnet=$CLUSTER_SUBNET --eth1_ip=$ETH1_IP
+--cluster_subnet=$CLUSTER_SUBNET --eth1_ip=$ETH1_IP --eth1_gw_ip=$ETH1_GW_IP
 ```
 
 * Create a CNI plugin directory on agent nodes.
 
 On each node where you plan to run a Mesos agent, create a directory for the
-CNI plugin and symlink the plugin executable into the new directory.
+CNI plugin and copy the plugin executable along with the ovnutil file into the
+new directory.
 
 ```
 mkdir -p $PATH_TO_CNI_PLUGIN_DIR
-ln -s $PATH_TO_OVS_DIR/ovn/utilities/ovn-mesos-plugin $PATH_TO_CNI_PLUGIN_DIR/ovn-mesos-plugin
+cp $PATH_TO_OVS_DIR/ovn/utilities/ovn-mesos-plugin $PATH_TO_CNI_PLUGIN_DIR/ovn-mesos-plugin
+cp $OVS_PYTHON_LIBS_PATH/ovn/mesos/ovnutil.py $PATH_TO_CNI_PLUGIN_DIR/ovnutil.py
 ```
 
 Running Mesos
@@ -128,6 +131,8 @@ them with the following commands, respectively:
 ovn-nbctl list Logical-Switch-Port master
 ovn-nbctl list Logical-Switch-Port ${OVS_SYSTEM_ID}_agent
 ```
+
+The addresses will be under the "dynamic_addresses" column.
 
 The following commands require you to be in the Mesos "build" directory, i.e.
 $MESOS_ROOT_DIRECTORY/build.

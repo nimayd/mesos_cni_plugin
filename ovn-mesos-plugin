@@ -5,8 +5,8 @@ import subprocess
 import sys
 from subprocess import call
 
-import ovnutil
-from ovnutil import ovn_nbctl, ovs_vsctl, call_popen
+import ovn.mesos.ovnutil as ovnutil
+from ovn.mesos.ovnutil import ovn_nbctl, ovs_vsctl, call_popen
 
 OVN_NB = ""
 OVN_BRIDGE = "br-int"
